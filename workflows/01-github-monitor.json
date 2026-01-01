@@ -1,0 +1,188 @@
+{
+  "name": "GitHub Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "github-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-github",
+      "name": "GitHub Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "github-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.headers['x-hub-signature-256']}}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "validate-signature",
+      "name": "Validate Signature",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Validate GitHub webhook signature\nconst crypto = require('crypto');\n\nconst secret = process.env.GITHUB_WEBHOOK_SECRET;\nconst payload = JSON.stringify($input.item.json.body);\nconst signature = $input.item.json.headers['x-hub-signature-256'];\n\nif (!signature || !secret) {\n  return { valid: false, reason: 'Missing signature or secret' };\n}\n\nconst hmac = crypto.createHmac('sha256', secret);\nhmac.update(payload);\nconst digest = 'sha256=' + hmac.digest('hex');\n\nconst valid = crypto.timingSafeEqual(\n  Buffer.from(signature),\n  Buffer.from(digest)\n);\n\nreturn { valid, event: $input.item.json.headers['x-github-event'] };"
+      },
+      "id": "verify-signature",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract and normalize GitHub event data\nconst body = $input.item.json.body;\nconst event = $input.item.json.headers['x-github-event'];\n\nlet normalized = {\n  source: 'github',\n  event_type: event,\n  timestamp: new Date().toISOString(),\n  repository: body.repository?.full_name || 'unknown',\n  url: '',\n  title: '',\n  description: '',\n  author: '',\n  metadata: {}\n};\n\n// Process based on event type\nswitch(event) {\n  case 'push':\n    normalized.title = `Push to ${body.ref.replace('refs/heads/', '')}`;\n    normalized.description = body.head_commit?.message || 'No commit message';\n    normalized.url = body.head_commit?.url || body.repository?.html_url;\n    normalized.author = body.pusher?.name || body.sender?.login;\n    normalized.metadata = {\n      commits: body.commits?.length || 0,\n      branch: body.ref.replace('refs/heads/', '')\n    };\n    break;\n\n  case 'issues':\n    normalized.title = `Issue ${body.action}: ${body.issue?.title}`;\n    normalized.description = body.issue?.body?.substring(0, 200) || '';\n    normalized.url = body.issue?.html_url;\n    normalized.author = body.issue?.user?.login;\n    normalized.metadata = {\n      action: body.action,\n      issue_number: body.issue?.number,\n      labels: body.issue?.labels?.map(l => l.name) || []\n    };\n    break;\n\n  case 'pull_request':\n    normalized.title = `PR ${body.action}: ${body.pull_request?.title}`;\n    normalized.description = body.pull_request?.body?.substring(0, 200) || '';\n    normalized.url = body.pull_request?.html_url;\n    normalized.author = body.pull_request?.user?.login;\n    normalized.metadata = {\n      action: body.action,\n      pr_number: body.pull_request?.number,\n      state: body.pull_request?.state\n    };\n    break;\n\n  case 'release':\n    normalized.title = `Release ${body.action}: ${body.release?.name || body.release?.tag_name}`;\n    normalized.description = body.release?.body?.substring(0, 200) || '';\n    normalized.url = body.release?.html_url;\n    normalized.author = body.release?.author?.login;\n    normalized.metadata = {\n      action: body.action,\n      tag: body.release?.tag_name,\n      prerelease: body.release?.prerelease\n    };\n    break;\n\n  default:\n    normalized.title = `GitHub ${event}`;\n    normalized.url = body.repository?.html_url;\n}\n\n// Generate unique item ID for deduplication\nconst crypto = require('crypto');\nconst itemId = `github_${event}_${body.repository?.id}_${Date.now()}`;\nconst contentHash = crypto.createHash('sha256')\n  .update(JSON.stringify(normalized))\n  .digest('hex');\n\nnormalized.item_id = itemId;\nnormalized.content_hash = contentHash;\n\nreturn normalized;"
+      },
+      "id": "normalize-event",
+      "name": "Normalize Event",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [850, 200]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT item_hash FROM notifications_history WHERE item_hash = $1 LIMIT 1",
+        "additionalFields": {
+          "queryParameters": "={{$json.content_hash}}"
+        }
+      },
+      "id": "check-duplicate",
+      "name": "Check Duplicate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1050, 200],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.length}}",
+              "operation": "equal",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "is-new",
+      "name": "Is New?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1250, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Send to Telegram dispatcher workflow\nreturn $input.all();"
+      },
+      "id": "send-to-telegram",
+      "name": "Send to Telegram",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1450, 100],
+      "parameters": {
+        "workflowId": "={{$env.TELEGRAM_DISPATCHER_WORKFLOW_ID}}",
+        "source": "database"
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"ok\", \"message\": \"Webhook received\"}"
+      },
+      "id": "respond-ok",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1650, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseCode": 403,
+        "responseBody": "={\"status\": \"error\", \"message\": \"Invalid signature\"}"
+      },
+      "id": "respond-error",
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [850, 400]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "notifications_history",
+        "columns": "source_id,item_id,item_hash,title,url,metadata",
+        "additionalFields": {
+          "queryParameters": "={{$json.source_id}},={{$json.item_id}},={{$json.content_hash}},={{$json.title}},={{$json.url}},={{JSON.stringify($json.metadata)}}"
+        }
+      },
+      "id": "log-notification",
+      "name": "Log Notification",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    }
+  ],
+  "connections": {
+    "GitHub Webhook": {
+      "main": [[{ "node": "Validate Signature", "type": "main", "index": 0 }]]
+    },
+    "Validate Signature": {
+      "main": [
+        [{ "node": "Verify Signature", "type": "main", "index": 0 }],
+        [{ "node": "Respond Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Verify Signature": {
+      "main": [[{ "node": "Normalize Event", "type": "main", "index": 0 }]]
+    },
+    "Normalize Event": {
+      "main": [[{ "node": "Check Duplicate", "type": "main", "index": 0 }]]
+    },
+    "Check Duplicate": {
+      "main": [[{ "node": "Is New?", "type": "main", "index": 0 }]]
+    },
+    "Is New?": {
+      "main": [
+        [
+          { "node": "Send to Telegram", "type": "main", "index": 0 },
+          { "node": "Log Notification", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Send to Telegram": {
+      "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]]
+    },
+    "Log Notification": {
+      "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

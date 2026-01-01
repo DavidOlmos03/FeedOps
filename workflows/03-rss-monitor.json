@@ -1,0 +1,205 @@
+{
+  "name": "RSS Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/30 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM feed_sources WHERE source_type = 'rss' AND enabled = true"
+      },
+      "id": "get-rss-sources",
+      "name": "Get RSS Sources",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{$json.source_identifier}}",
+        "options": {
+          "timeout": 30
+        }
+      },
+      "id": "fetch-rss",
+      "name": "Fetch RSS Feed",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Normalize RSS item data\nconst item = $input.item.json;\nconst source = $node['Get RSS Sources'].json;\nconst crypto = require('crypto');\n\n// Generate unique item ID\nconst itemId = item.guid || item.link || crypto.createHash('md5')\n  .update(item.title + item.pubDate)\n  .digest('hex');\n\n// Check if this is newer than last check\nconst lastCheck = source.last_check ? new Date(source.last_check) : null;\nconst itemDate = new Date(item.pubDate || item.isoDate);\n\nif (lastCheck && itemDate <= lastCheck) {\n  return null; // Skip old items\n}\n\n// Apply keyword filter if configured\nif (source.config?.keywords) {\n  const keywords = source.config.keywords.toLowerCase().split(',');\n  const title = (item.title || '').toLowerCase();\n  const description = (item.contentSnippet || item.content || '').toLowerCase();\n  \n  const hasKeyword = keywords.some(kw => \n    title.includes(kw.trim()) || description.includes(kw.trim())\n  );\n  \n  if (!hasKeyword) {\n    return null;\n  }\n}\n\nconst normalized = {\n  source: 'rss',\n  source_id: source.id,\n  event_type: 'new_item',\n  timestamp: itemDate.toISOString(),\n  item_id: `rss_${crypto.createHash('md5').update(itemId).digest('hex')}`,\n  title: item.title || 'No title',\n  description: (item.contentSnippet || item.content || '').substring(0, 500),\n  url: item.link || '',\n  author: item.creator || item.author || 'Unknown',\n  metadata: {\n    feed_title: item.meta?.title || source.config?.feed_name || 'RSS Feed',\n    categories: item.categories || [],\n    enclosures: item.enclosure ? [item.enclosure] : [],\n    pub_date: itemDate.toISOString()\n  }\n};\n\n// Generate content hash for deduplication\nnormalized.content_hash = crypto.createHash('sha256')\n  .update(JSON.stringify({\n    guid: itemId,\n    title: item.title,\n    link: item.link\n  }))\n  .digest('hex');\n\nreturn normalized;"
+      },
+      "id": "normalize-items",
+      "name": "Normalize Items",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT item_id FROM notifications_history WHERE item_id = $1 LIMIT 1",
+        "additionalFields": {
+          "queryParameters": "={{$json.item_id}}"
+        }
+      },
+      "id": "check-duplicate",
+      "name": "Check Duplicate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.length}}",
+              "operation": "equal",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "is-new",
+      "name": "Is New?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{$env.TELEGRAM_DISPATCHER_WORKFLOW_ID}}",
+        "source": "database"
+      },
+      "id": "send-to-telegram",
+      "name": "Send to Telegram",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1450, 200]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "notifications_history",
+        "columns": "source_id,item_id,item_hash,title,url,metadata",
+        "additionalFields": {
+          "queryParameters": "={{$json.source_id}},={{$json.item_id}},={{$json.content_hash}},={{$json.title}},={{$json.url}},={{JSON.stringify($json.metadata)}}"
+        }
+      },
+      "id": "log-notification",
+      "name": "Log Notification",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1450, 400]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE feed_sources SET last_check = NOW(), error_count = 0 WHERE id = $1",
+        "additionalFields": {
+          "queryParameters": "={{$json.source_id}}"
+        }
+      },
+      "id": "update-source-status",
+      "name": "Update Source Status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1650, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Error handler\nconst sourceId = $json.source_id || $node['Get RSS Sources'].json?.id;\nconst errorMessage = $json.error?.message || 'Unknown error';\n\nconsole.error(`RSS fetch error for source ${sourceId}: ${errorMessage}`);\n\nreturn { source_id: sourceId, error: errorMessage };"
+      },
+      "id": "error-handler",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [850, 500]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE feed_sources SET error_count = error_count + 1, last_check = NOW() WHERE id = $1",
+        "additionalFields": {
+          "queryParameters": "={{$json.source_id}}"
+        }
+      },
+      "id": "update-error-count",
+      "name": "Update Error Count",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1050, 500]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Get RSS Sources", "type": "main", "index": 0 }]]
+    },
+    "Get RSS Sources": {
+      "main": [[{ "node": "Fetch RSS Feed", "type": "main", "index": 0 }]]
+    },
+    "Fetch RSS Feed": {
+      "main": [
+        [{ "node": "Normalize Items", "type": "main", "index": 0 }],
+        [{ "node": "Error Handler", "type": "main", "index": 0 }]
+      ]
+    },
+    "Normalize Items": {
+      "main": [[{ "node": "Check Duplicate", "type": "main", "index": 0 }]]
+    },
+    "Check Duplicate": {
+      "main": [[{ "node": "Is New?", "type": "main", "index": 0 }]]
+    },
+    "Is New?": {
+      "main": [
+        [
+          { "node": "Send to Telegram", "type": "main", "index": 0 },
+          { "node": "Log Notification", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Send to Telegram": {
+      "main": [[{ "node": "Update Source Status", "type": "main", "index": 0 }]]
+    },
+    "Log Notification": {
+      "main": [[{ "node": "Update Source Status", "type": "main", "index": 0 }]]
+    },
+    "Error Handler": {
+      "main": [[{ "node": "Update Error Count", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

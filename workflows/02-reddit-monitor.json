@@ -1,0 +1,215 @@
+{
+  "name": "Reddit Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM feed_sources WHERE source_type = 'reddit' AND enabled = true"
+      },
+      "id": "get-reddit-sources",
+      "name": "Get Reddit Sources",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "subreddit",
+        "operation": "getPosts",
+        "subreddit": "={{$json.config.subreddit}}",
+        "category": "new",
+        "limit": 25,
+        "additionalFields": {}
+      },
+      "id": "fetch-reddit-posts",
+      "name": "Fetch Reddit Posts",
+      "type": "n8n-nodes-base.reddit",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": {
+        "redditOAuth2Api": {
+          "id": "2",
+          "name": "Reddit OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Normalize Reddit post data\nconst post = $input.item.json;\nconst sourceConfig = $node['Get Reddit Sources'].json.config;\n\n// Apply filters\nif (sourceConfig.min_score && post.score < sourceConfig.min_score) {\n  return null; // Skip posts below minimum score\n}\n\nif (sourceConfig.keywords) {\n  const keywords = sourceConfig.keywords.toLowerCase().split(',');\n  const title = post.title.toLowerCase();\n  const text = (post.selftext || '').toLowerCase();\n  \n  const hasKeyword = keywords.some(kw => \n    title.includes(kw.trim()) || text.includes(kw.trim())\n  );\n  \n  if (!hasKeyword) {\n    return null; // Skip posts without keywords\n  }\n}\n\nif (sourceConfig.flair && post.link_flair_text !== sourceConfig.flair) {\n  return null; // Skip posts without matching flair\n}\n\nconst crypto = require('crypto');\n\nconst normalized = {\n  source: 'reddit',\n  source_id: $node['Get Reddit Sources'].json.id,\n  event_type: 'new_post',\n  timestamp: new Date(post.created_utc * 1000).toISOString(),\n  item_id: `reddit_${post.id}`,\n  title: post.title,\n  description: post.selftext?.substring(0, 500) || '',\n  url: `https://reddit.com${post.permalink}`,\n  author: post.author,\n  metadata: {\n    subreddit: post.subreddit,\n    score: post.score,\n    num_comments: post.num_comments,\n    flair: post.link_flair_text,\n    is_nsfw: post.over_18,\n    domain: post.domain\n  }\n};\n\n// Generate content hash for deduplication\nnormalized.content_hash = crypto.createHash('sha256')\n  .update(JSON.stringify({\n    id: post.id,\n    title: post.title,\n    author: post.author\n  }))\n  .digest('hex');\n\nreturn normalized;"
+      },
+      "id": "normalize-posts",
+      "name": "Normalize Posts",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT item_id FROM notifications_history WHERE item_id = $1 LIMIT 1",
+        "additionalFields": {
+          "queryParameters": "={{$json.item_id}}"
+        }
+      },
+      "id": "check-duplicate",
+      "name": "Check Duplicate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.length}}",
+              "operation": "equal",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "is-new",
+      "name": "Is New?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{$env.TELEGRAM_DISPATCHER_WORKFLOW_ID}}",
+        "source": "database"
+      },
+      "id": "send-to-telegram",
+      "name": "Send to Telegram",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1450, 200]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "notifications_history",
+        "columns": "source_id,item_id,item_hash,title,url,metadata",
+        "additionalFields": {
+          "queryParameters": "={{$json.source_id}},={{$json.item_id}},={{$json.content_hash}},={{$json.title}},={{$json.url}},={{JSON.stringify($json.metadata)}}"
+        }
+      },
+      "id": "log-notification",
+      "name": "Log Notification",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1450, 400]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE feed_sources SET last_check = NOW(), error_count = 0 WHERE id = $1",
+        "additionalFields": {
+          "queryParameters": "={{$json.source_id}}"
+        }
+      },
+      "id": "update-source-status",
+      "name": "Update Source Status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1650, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Error handler - increment error count\nconst sourceId = $json.source_id;\nconst errorMessage = $json.error?.message || 'Unknown error';\n\nconsole.error(`Reddit fetch error for source ${sourceId}: ${errorMessage}`);\n\nreturn { source_id: sourceId, error: errorMessage };"
+      },
+      "id": "error-handler",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [850, 500]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE feed_sources SET error_count = error_count + 1, last_check = NOW() WHERE id = $1",
+        "additionalFields": {
+          "queryParameters": "={{$json.source_id}}"
+        }
+      },
+      "id": "update-error-count",
+      "name": "Update Error Count",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1050, 500]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Get Reddit Sources", "type": "main", "index": 0 }]]
+    },
+    "Get Reddit Sources": {
+      "main": [[{ "node": "Fetch Reddit Posts", "type": "main", "index": 0 }]]
+    },
+    "Fetch Reddit Posts": {
+      "main": [
+        [{ "node": "Normalize Posts", "type": "main", "index": 0 }],
+        [{ "node": "Error Handler", "type": "main", "index": 0 }]
+      ]
+    },
+    "Normalize Posts": {
+      "main": [[{ "node": "Check Duplicate", "type": "main", "index": 0 }]]
+    },
+    "Check Duplicate": {
+      "main": [[{ "node": "Is New?", "type": "main", "index": 0 }]]
+    },
+    "Is New?": {
+      "main": [
+        [
+          { "node": "Send to Telegram", "type": "main", "index": 0 },
+          { "node": "Log Notification", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Send to Telegram": {
+      "main": [[{ "node": "Update Source Status", "type": "main", "index": 0 }]]
+    },
+    "Log Notification": {
+      "main": [[{ "node": "Update Source Status", "type": "main", "index": 0 }]]
+    },
+    "Error Handler": {
+      "main": [[{ "node": "Update Error Count", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}
