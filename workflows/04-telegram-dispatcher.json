@@ -60,8 +60,19 @@
       "parameters": {
         "operation": "executeQuery",
         "query": "UPDATE notifications_history SET telegram_message_id = $1 WHERE item_id = $2",
-        "additionalFields": {
-          "queryParameters": "={{$json.message.message_id}},={{$json.source_data.item_id}}"
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "1",
+                "value": "={{$json.message.message_id}}"
+              },
+              {
+                "name": "2",
+                "value": "={{$json.source_data.item_id}}"
+              }
+            ]
+          }
         }
       },
       "id": "update-notification",

@@ -39,8 +39,15 @@
       "parameters": {
         "operation": "executeQuery",
         "query": "SELECT item_hash FROM notifications_history WHERE item_hash = $1 LIMIT 1",
-        "additionalFields": {
-          "queryParameters": "={{$json.content_hash}}"
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "1",
+                "value": "={{$json.content_hash}}"
+              }
+            ]
+          }
         }
       },
       "id": "check-duplicate",
@@ -110,11 +117,33 @@
     },
     {
       "parameters": {
-        "operation": "insert",
-        "table": "notifications_history",
-        "columns": "source_id,item_id,item_hash,title,url,metadata",
-        "additionalFields": {
-          "queryParameters": "={{$json.source_id}},={{$json.item_id}},={{$json.content_hash}},={{$json.title}},={{$json.url}},={{JSON.stringify($json.metadata)}}"
+        "operation": "executeQuery",
+        "query": "INSERT INTO notifications_history (item_id, item_hash, title, url, metadata) VALUES ($1, $2, $3, $4, $5)",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "1",
+                "value": "={{$json.item_id}}"
+              },
+              {
+                "name": "2",
+                "value": "={{$json.content_hash}}"
+              },
+              {
+                "name": "3",
+                "value": "={{$json.title}}"
+              },
+              {
+                "name": "4",
+                "value": "={{$json.url}}"
+              },
+              {
+                "name": "5",
+                "value": "={{JSON.stringify($json.metadata)}}"
+              }
+            ]
+          }
         }
       },
       "id": "log-notification",
