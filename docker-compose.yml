@@ -84,6 +84,17 @@ services:
       - GENERIC_TIMEZONE=${TZ:-UTC}
       - TZ=${TZ:-UTC}
 
+      # Environment variables access
+      - N8N_ALLOW_ENV_ACCESS_IN_NODES=true
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+
+      # Function node settings - Allow built-in modules like crypto
+      - NODE_FUNCTION_ALLOW_BUILTIN=crypto
+      - NODE_FUNCTION_ALLOW_EXTERNAL=
+
+      # Security settings
+      - N8N_SECURE_COOKIE=false
+
       # Integrations (passed as env vars for use in workflows)
       - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
       - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}
@@ -93,6 +104,7 @@ services:
       - REDDIT_PASSWORD=${REDDIT_PASSWORD}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_DEFAULT_CHAT_ID=${TELEGRAM_DEFAULT_CHAT_ID}
+      - ALERT_TELEGRAM_CHAT_ID=${ALERT_TELEGRAM_CHAT_ID}
 
     volumes:
       - n8n_data:/home/node/.n8n
