@@ -82,6 +82,16 @@
     },
     {
       "parameters": {
+        "functionCode": "// Pass normalized event data to Telegram Dispatcher\nreturn $('Normalize Event').item.json;"
+      },
+      "id": "prepare-telegram-data",
+      "name": "Prepare Telegram Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1350, 100]
+    },
+    {
+      "parameters": {
         "source": "database",
         "workflowId": "={{ $workflow.id }}"
       },
@@ -89,7 +99,7 @@
       "name": "Send to Telegram",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [1450, 100],
+      "position": [1550, 100],
       "notes": "Calls Telegram Dispatcher workflow - configure workflow ID in n8n UI"
     },
     {
@@ -122,11 +132,11 @@
         "columns": {
           "mappingMode": "defineBelow",
           "value": {
-            "item_id": "={{$json.item_id}}",
-            "item_hash": "={{$json.content_hash}}",
-            "title": "={{$json.title}}",
-            "url": "={{$json.url}}",
-            "metadata": "={{JSON.stringify($json.metadata)}}"
+            "item_id": "={{$('Normalize Event').item.json.item_id}}",
+            "item_hash": "={{$('Normalize Event').item.json.content_hash}}",
+            "title": "={{$('Normalize Event').item.json.title}}",
+            "url": "={{$('Normalize Event').item.json.url}}",
+            "metadata": "={{JSON.stringify($('Normalize Event').item.json.metadata)}}"
           }
         }
       },
@@ -153,10 +163,13 @@
     "Is New?": {
       "main": [
         [
-          { "node": "Send to Telegram", "type": "main", "index": 0 },
+          { "node": "Prepare Telegram Data", "type": "main", "index": 0 },
           { "node": "Log Notification", "type": "main", "index": 0 }
         ]
       ]
+    },
+    "Prepare Telegram Data": {
+      "main": [[{ "node": "Send to Telegram", "type": "main", "index": 0 }]]
     },
     "Send to Telegram": {
       "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]]
