@@ -497,6 +497,101 @@ ACME_EMAIL=admin@example.com
 docker-compose --profile production up -d
 ```
 
+## Manual Workflow Configuration
+
+After importing workflows into n8n, some PostgreSQL nodes require manual configuration because query parameters don't import correctly from JSON files.
+
+### GitHub Monitor Workflow
+
+#### Check Duplicate Node
+
+The "Check Duplicate" node in the GitHub Monitor workflow requires manual parameter configuration:
+
+1. Open the **GitHub Monitor** workflow in n8n
+2. Click on the **"Check Duplicate"** node
+3. Verify the query is:
+   ```sql
+   SELECT item_hash FROM notifications_history WHERE item_hash = $1 LIMIT 1
+   ```
+4. Scroll down and click **"Add Option"**
+5. Select **"Query Parameters"** from the dropdown
+6. Click **"Add Parameter"**
+7. Configure the parameter:
+   - **Parameter**: `1` (just the number, not $1)
+   - **Value**: `={{$json.content_hash}}`
+8. Click **"Save"**
+
+**Why this is needed:** The PostgreSQL node's query parameters don't import from JSON files. The `$1` placeholder in the query needs to be manually bound to the `content_hash` value from the previous node's output.
+
+### Telegram Dispatcher Workflow
+
+#### Update Notification Node
+
+The "Update Notification" node in the Telegram Dispatcher workflow requires two parameters:
+
+1. Open the **Telegram Dispatcher** workflow in n8n
+2. Click on the **"Update Notification"** node
+3. Verify the query is:
+   ```sql
+   UPDATE notifications_history SET telegram_message_id = $1 WHERE item_id = $2
+   ```
+4. Scroll down and click **"Add Option"**
+5. Select **"Query Parameters"**
+6. Click **"Add Parameter"** and configure **Parameter 1**:
+   - **Parameter**: `1`
+   - **Value**: `={{$json.message.message_id}}`
+7. Click **"Add Parameter"** again and configure **Parameter 2**:
+   - **Parameter**: `2`
+   - **Value**: `={{$json.source_data.item_id}}`
+8. Click **"Save"**
+
+**Why this is needed:** This node updates the database with the Telegram message ID after successfully sending a notification, allowing tracking of which notifications were sent.
+
+### Reddit Monitor Workflow
+
+The Reddit Monitor workflow also has PostgreSQL nodes that may require manual parameter configuration:
+
+- **Check Duplicate**: Parameter `1` = `={{$json.item_id}}`
+- **Log Notification**: Uses INSERT with column mapping (should import correctly)
+- **Update Source Status**: Parameter `1` = `={{$json.source_id}}`
+- **Update Error Count**: Parameter `1` = `={{$json.source_id}}`
+
+### RSS Monitor Workflow
+
+Similar to Reddit Monitor:
+
+- **Check Duplicate**: Parameter `1` = `={{$json.item_id}}`
+- **Log Notification**: Uses INSERT with column mapping (should import correctly)
+- **Update Source Status**: Parameter `1` = `={{$json.source_id}}`
+- **Update Error Count**: Parameter `1` = `={{$json.source_id}}`
+
+### General PostgreSQL Parameter Configuration
+
+For any PostgreSQL node with parameterized queries:
+
+1. Look for `$1`, `$2`, etc. in the SQL query
+2. Add Query Parameters option
+3. Match each `$N` with the corresponding parameter number
+4. Use n8n expressions (`={{...}}`) to bind values from previous nodes
+
+**Common errors if not configured:**
+- `"there is no parameter $1"` - Query parameters not configured
+- `"Node does not have any credentials set"` - PostgreSQL credentials not selected
+
+### Verifying Configuration
+
+After manual configuration, test each workflow:
+
+1. Click **"Execute Workflow"** button
+2. Check for errors in the execution log
+3. Verify data flows correctly through all nodes
+4. Confirm database queries execute successfully
+
+If you see parameter errors, double-check that:
+- Parameter numbers match (`1` for `$1`, `2` for `$2`, etc.)
+- Values use correct n8n expressions
+- Previous nodes output the expected data structure
+
 ## Workflow Customization
 
 ### Adding New Event Types
