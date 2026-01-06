@@ -1,6 +1,6 @@
 # FeedOps - Automated Feed Monitoring System
 
-FeedOps is a professional, modular, and scalable monitoring system built with n8n and Docker. It automates the collection, processing, and distribution of updates from multiple sources (GitHub, Reddit, RSS feeds) to Telegram.
+FeedOps is a professional, modular, and scalable monitoring system built with n8n and Docker (Open Source). It automates the collection, processing, and distribution of updates from multiple sources (GitHub, Reddit, RSS feeds) to Telegram.
 
 ## Features
 
@@ -9,25 +9,10 @@ FeedOps is a professional, modular, and scalable monitoring system built with n8
   - Reddit: Track subreddits and user posts with keyword filtering
   - RSS/Atom: Monitor custom feeds with periodic updates
 
-- **Intelligent Processing**
-  - Data normalization and enrichment
-  - Deduplication to avoid repeated notifications
-  - Priority-based classification
-  - Customizable message templates
-
-- **Flexible Delivery**
-  - Telegram integration with Markdown support
-  - Multiple channels/groups support
-  - Inline buttons for quick actions
-  - Media embedding
-
 - **Production-Ready**
   - Docker-based deployment
-  - PostgreSQL persistence
-  - Redis caching (optional)
   - Comprehensive logging
   - Health checks and monitoring
-  - Retry logic with exponential backoff
 
 ## Quick Start
 
@@ -36,7 +21,7 @@ FeedOps is a professional, modular, and scalable monitoring system built with n8
 - Docker >= 20.10
 - Docker Compose >= 2.0
 - 4GB RAM minimum
-- 10GB disk space
+- 10GB disk space (Important)
 
 ### Installation
 
@@ -52,7 +37,7 @@ cp .env.example .env
 # Edit .env with your credentials
 ```
 
-3. Generate encryption key:
+3. Generate encryption key (Important):
 ```bash
 ./scripts/generate-keys.sh
 ```
@@ -70,27 +55,7 @@ Password: (from .env)
 ```
 
 ## Documentation
-
-- [Installation Guide](docs/INSTALLATION.md) - Detailed setup instructions
-- [Configuration Guide](docs/CONFIGURATION.md) - Configure data sources and workflows
-- [Architecture Overview](docs/ARCHITECTURE.md) - Technical architecture and design decisions
-- [n8n Workflow Setup](docs/N8N_WORKFLOWS.md) - Import and configure workflows
-- [Scalability Strategy](docs/SCALABILITY.md) - Migration and scaling guide
-- [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
-- [API Reference](docs/API.md) - API endpoints and usage
-
-## Project Structure
-
-```
-feedops/
-├── docker-compose.yml          # Main orchestration file
-├── .env.example                # Environment template
-├── docs/                       # Documentation
-├── scripts/                    # Initialization and maintenance scripts
-├── workflows/                  # n8n workflow templates
-├── custom-nodes/              # Custom n8n nodes (if any)
-└── configs/                   # Configuration files
-```
+Check the files inside the "docs" folder, in case you have any problem or contact with me 🤙🏻
 
 ## Contributing
 
@@ -99,10 +64,6 @@ This project follows industry best practices for Docker and n8n deployments. Con
 - Comprehensive error handling
 - Clear documentation
 - Security best practices
-
-## License
-
-[Your License Here]
 
 ## Support
 
