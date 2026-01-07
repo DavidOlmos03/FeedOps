@@ -5,9 +5,10 @@ FeedOps is a professional, modular, and scalable monitoring system built with n8
 ## Features
 
 - **Multiple Data Sources**
-  - GitHub: Monitor repositories for pushes, issues, PRs, and releases
-  - Reddit: Track subreddits and user posts with keyword filtering
-  - RSS/Atom: Monitor custom feeds with periodic updates
+  - **GitHub Webhooks**: Real-time monitoring of your repositories for pushes, issues, PRs, and releases
+  - **GitHub API Polling**: Monitor any public repository for commits and issues (even ones you don't own)
+  - **Reddit**: Track subreddits and user posts with keyword filtering
+  - **RSS/Atom**: Monitor custom feeds with periodic updates
 
 - **Production-Ready**
   - Docker-based deployment

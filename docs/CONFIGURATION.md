@@ -244,6 +244,287 @@ VALUES (
 );
 ```
 
+### 6. GitHub API Monitoring (Alternative to Webhooks)
+
+**Use this method when you want to monitor public repositories you don't own.**
+
+#### Differences: Webhook vs API Polling
+
+| Aspect | Webhook Monitor | API Polling Monitor |
+|--------|----------------|---------------------|
+| Use case | Your repositories | Any public repository |
+| Latency | Real-time (<1s) | Up to 5 minutes |
+| Setup | Webhook per repo | Database entry only |
+| Requirements | Repo admin access | GitHub token only |
+| Events | Push, PR, Issues, Releases | Commits, Issues |
+
+#### Step 1: Generate Fine-grained Personal Access Token
+
+1. Go to GitHub → **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**
+2. Click **"Generate new token"**
+3. Configure token:
+   - **Token name**: `FeedOps API Monitor`
+   - **Expiration**: 90 days (recommended)
+   - **Repository access**: **Public Repositories (read-only)**
+   - **Permissions**:
+     - **Contents**: Read-only (for commits)
+     - **Issues**: Read-only (for issues)
+     - **Pull requests**: Read-only (optional)
+4. Click **"Generate token"**
+5. **Copy the token** (starts with `github_pat_`)
+
+**Security Note**:
+- Never commit tokens to git
+- Set calendar reminder before expiration
+- Regenerate token every 90 days
+
+#### Step 2: Add Token to Environment
+
+Edit `.env` file:
+```bash
+GITHUB_PERSONAL_ACCESS_TOKEN=github_pat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+Restart n8n to load new environment variable:
+```bash
+docker-compose restart n8n
+```
+
+Verify token is loaded (optional):
+```bash
+docker exec feedops-n8n printenv | grep GITHUB_PERSONAL_ACCESS_TOKEN
+```
+
+#### Step 3: Configure HTTP Header Auth in n8n
+
+1. Open n8n UI: `http://localhost:5678`
+2. Go to **Credentials** (left sidebar)
+3. Click **"+ Add Credential"**
+4. Search for **"HTTP Header Auth"**
+5. Configure:
+   - **Name**: `GitHub API Token`
+   - **Name** (header name): `Authorization`
+   - **Value**: `Bearer {{$env.GITHUB_PERSONAL_ACCESS_TOKEN}}`
+6. Click **"Save"**
+
+#### Step 4: Import GitHub API Monitor Workflow
+
+1. In n8n, go to **Workflows**
+2. Click **"⋮"** menu → **"Import from File"**
+3. Select `workflows/05-github-api-monitor.json`
+4. Click **"Save"**
+
+**Important**: After importing, manually configure PostgreSQL query parameters (they don't import from JSON):
+- **Check Duplicate** node: Add parameter `1` = `={{$json.item_id}}`
+- **Log Notification** node: Should import correctly
+- **Update Source Status** node: Add parameter `1` = `={{$json.source_id}}`
+- **Update Error Count** node: Add parameter `1` = `={{$json.source_id}}`
+
+#### Step 5: Add Repositories to Monitor
+
+**Via PostgreSQL**:
+
+```bash
+# Access PostgreSQL
+docker exec -it feedops-postgres psql -U n8n -d n8n
+```
+
+**Basic monitoring** (commits + issues):
+```sql
+INSERT INTO feed_sources (source_type, source_identifier, config, enabled)
+VALUES (
+  'github_api',
+  'kubernetes/kubernetes',
+  '{"event_types": ["push", "issues"]}',
+  true
+);
+```
+
+**With keyword filtering**:
+```sql
+INSERT INTO feed_sources (source_type, source_identifier, config, enabled)
+VALUES (
+  'github_api',
+  'docker/docker',
+  '{"event_types": ["push"], "keywords": "security,vulnerability,cve"}',
+  true
+);
+```
+
+**Issues with required labels**:
+```sql
+INSERT INTO feed_sources (source_type, source_identifier, config, enabled)
+VALUES (
+  'github_api',
+  'vercel/next.js',
+  '{"event_types": ["issues"], "required_labels": "bug,confirmed"}',
+  true
+);
+```
+
+**Exclude pull requests**:
+```sql
+INSERT INTO feed_sources (source_type, source_identifier, config, enabled)
+VALUES (
+  'github_api',
+  'facebook/react',
+  '{"event_types": ["issues"], "include_pull_requests": false}',
+  true
+);
+```
+
+#### Step 6: Configuration Options
+
+**Config JSON Structure**:
+```json
+{
+  "event_types": ["push", "issues"],
+  "keywords": "security,bug,feature",
+  "required_labels": "priority-high,critical",
+  "include_pull_requests": false
+}
+```
+
+**Available Options**:
+
+| Option | Type | Description | Example |
+|--------|------|-------------|---------|
+| `event_types` | Array | Events to monitor | `["push", "issues"]` |
+| `keywords` | String | Filter by keywords (comma-separated) | `"security,bug"` |
+| `required_labels` | String | Filter issues by labels (comma-separated) | `"bug,confirmed"` |
+| `include_pull_requests` | Boolean | Include PRs in issue monitoring | `false` (default) |
+
+#### Step 7: Activate Workflow
+
+1. Open **GitHub API Monitor** workflow in n8n
+2. Click **"Execute Workflow"** to test manually
+3. Verify execution completes successfully
+4. Toggle **"Active"** switch in top-right
+5. Workflow now runs every 5 minutes
+
+#### Step 8: Manage Repositories
+
+**View all monitored repositories**:
+```sql
+SELECT
+  id,
+  source_identifier AS repository,
+  config->'event_types' AS monitoring,
+  enabled,
+  last_check,
+  error_count,
+  created_at
+FROM feed_sources
+WHERE source_type = 'github_api'
+ORDER BY created_at DESC;
+```
+
+**Enable/disable repository**:
+```sql
+-- Disable monitoring
+UPDATE feed_sources
+SET enabled = false
+WHERE source_identifier = 'owner/repo' AND source_type = 'github_api';
+
+-- Re-enable monitoring
+UPDATE feed_sources
+SET enabled = true
+WHERE source_identifier = 'owner/repo' AND source_type = 'github_api';
+```
+
+**Update configuration**:
+```sql
+UPDATE feed_sources
+SET config = '{"event_types": ["issues"], "required_labels": "security"}'
+WHERE source_identifier = 'owner/repo' AND source_type = 'github_api';
+```
+
+**Delete repository**:
+```sql
+DELETE FROM feed_sources
+WHERE source_identifier = 'owner/repo' AND source_type = 'github_api';
+```
+
+#### Rate Limits
+
+**GitHub API Limits**:
+- **Authenticated**: 5,000 requests/hour
+- **Per endpoint**: No specific limit
+
+**Calculate usage**:
+- 10 repositories × 2 events × 12 polls/hour = **240 requests/hour**
+- Leaves **4,760 requests** for other uses (95% available)
+
+**Check current rate limit**:
+```bash
+curl -H "Authorization: Bearer YOUR_TOKEN" \
+     https://api.github.com/rate_limit
+```
+
+**Response**:
+```json
+{
+  "resources": {
+    "core": {
+      "limit": 5000,
+      "remaining": 4760,
+      "reset": 1704726000
+    }
+  }
+}
+```
+
+#### Troubleshooting
+
+**401 Unauthorized**:
+```
+Error: Request failed with status code 401
+```
+- **Cause**: Token invalid or expired
+- **Solution**:
+  1. Regenerate token in GitHub
+  2. Update `.env` with new token
+  3. Restart n8n: `docker-compose restart n8n`
+
+**403 Forbidden (Rate Limit)**:
+```
+Error: API rate limit exceeded
+```
+- **Cause**: Too many requests
+- **Solution**:
+  1. Check rate limit: `curl ... /rate_limit`
+  2. Reduce polling frequency (change to */15 or */30)
+  3. Remove unused repositories
+
+**404 Not Found**:
+```
+Error: Not Found
+```
+- **Cause**: Repository doesn't exist or is private
+- **Solution**:
+  1. Verify repository exists and is public
+  2. Check `source_identifier` format: `owner/repo` (not full URL)
+
+**No notifications received**:
+- **Check filters**: Keywords or labels may be too restrictive
+- **Check last_check**: May be too recent, no new activity
+- **Check enabled**: Verify `enabled = true` in database
+- **Check workflow**: Ensure workflow is active in n8n
+
+**Duplicate notifications**:
+- **Check deduplication**: Verify `item_id` generation is consistent
+- **Check database**: Query `notifications_history` for duplicates
+
+**High error_count**:
+```sql
+-- Find sources with errors
+SELECT source_identifier, error_count, last_check
+FROM feed_sources
+WHERE source_type = 'github_api' AND error_count > 0;
+```
+- **Auto-disable after 5 errors**: Consider adding automated cleanup
+- **Reset error count**: `UPDATE feed_sources SET error_count = 0 WHERE id = X;`
+
 ## Reddit Configuration
 
 ### 1. Create Reddit App

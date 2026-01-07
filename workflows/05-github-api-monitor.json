@@ -1,0 +1,388 @@
+{
+  "name": "GitHub API Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/5 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM feed_sources WHERE source_type = 'github_api' AND enabled = true"
+      },
+      "id": "get-github-sources",
+      "name": "Get GitHub API Sources",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Split each source into multiple items - one per event type\nconst source = $input.item.json;\nconst config = source.config || {};\nconst eventTypes = config.event_types || ['push', 'issues'];\n\nconst lastCheck = source.last_check \n  ? new Date(source.last_check).toISOString()\n  : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(); // Default: last 24 hours\n\n// Create one item per event type\nconst items = eventTypes.map(eventType => {\n  let endpoint, apiPath;\n  \n  if (eventType === 'push') {\n    endpoint = 'commits';\n    apiPath = `/repos/${source.source_identifier}/commits`;\n  } else if (eventType === 'issues') {\n    endpoint = 'issues';\n    apiPath = `/repos/${source.source_identifier}/issues`;\n  }\n  \n  return {\n    source_id: source.id,\n    repository: source.source_identifier,\n    event_type: eventType,\n    endpoint: endpoint,\n    api_path: apiPath,\n    last_check: lastCheck,\n    config: config\n  };\n});\n\nreturn items;"
+      },
+      "id": "split-by-event-type",
+      "name": "Split by Event Type",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com{{$json.api_path}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "since",
+              "value": "={{$json.last_check}}"
+            },
+            {
+              "name": "per_page",
+              "value": "30"
+            },
+            {
+              "name": "state",
+              "value": "={{$json.event_type === 'issues' ? 'all' : ''}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-github-api",
+      "name": "Fetch GitHub API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "4",
+          "name": "GitHub API Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Normalize GitHub API response to standard schema\nconst items = $input.all();\nconst crypto = require('crypto');\n\nconst normalized = [];\n\nfor (const item of items) {\n  const eventData = item.json;\n  const sourceData = $node['Split by Event Type'].json;\n  const eventType = sourceData.event_type;\n  const config = sourceData.config || {};\n  \n  // Handle array response from GitHub API\n  const apiItems = Array.isArray(eventData) ? eventData : [eventData];\n  \n  for (const apiItem of apiItems) {\n    let normalizedItem;\n    \n    if (eventType === 'push') {\n      // Normalize commit\n      const commitMessage = apiItem.commit?.message || '';\n      const firstLine = commitMessage.split('\\n')[0];\n      \n      // Apply keyword filter if configured\n      if (config.keywords) {\n        const keywords = config.keywords.toLowerCase().split(',');\n        const searchText = (firstLine + ' ' + commitMessage).toLowerCase();\n        const hasKeyword = keywords.some(kw => searchText.includes(kw.trim()));\n        if (!hasKeyword) continue;\n      }\n      \n      normalizedItem = {\n        source: 'github',\n        source_id: sourceData.source_id,\n        event_type: 'push',\n        timestamp: apiItem.commit?.author?.date || new Date().toISOString(),\n        repository: sourceData.repository,\n        url: apiItem.html_url || apiItem.url,\n        title: `New commit to ${sourceData.repository}`,\n        description: firstLine.substring(0, 500),\n        author: apiItem.commit?.author?.name || apiItem.author?.login || 'Unknown',\n        item_id: `github_polling_push_${sourceData.source_id}_${apiItem.sha}`,\n        metadata: {\n          sha: apiItem.sha,\n          full_message: commitMessage,\n          committer: apiItem.commit?.committer?.name || 'Unknown'\n        }\n      };\n      \n      // Generate content hash\n      normalizedItem.content_hash = crypto.createHash('sha256')\n        .update(JSON.stringify({\n          sha: apiItem.sha,\n          message: commitMessage,\n          date: apiItem.commit?.author?.date\n        }))\n        .digest('hex');\n        \n    } else if (eventType === 'issues') {\n      // Skip pull requests unless explicitly enabled\n      if (apiItem.pull_request && !config.include_pull_requests) {\n        continue;\n      }\n      \n      // Apply label filter if configured\n      if (config.required_labels) {\n        const requiredLabels = config.required_labels.split(',').map(l => l.trim().toLowerCase());\n        const itemLabels = (apiItem.labels || []).map(l => l.name.toLowerCase());\n        const hasRequiredLabel = requiredLabels.some(req => itemLabels.includes(req));\n        if (!hasRequiredLabel) continue;\n      }\n      \n      // Apply keyword filter if configured\n      if (config.keywords) {\n        const keywords = config.keywords.toLowerCase().split(',');\n        const searchText = ((apiItem.title || '') + ' ' + (apiItem.body || '')).toLowerCase();\n        const hasKeyword = keywords.some(kw => searchText.includes(kw.trim()));\n        if (!hasKeyword) continue;\n      }\n      \n      normalizedItem = {\n        source: 'github',\n        source_id: sourceData.source_id,\n        event_type: 'issues',\n        timestamp: apiItem.updated_at || apiItem.created_at || new Date().toISOString(),\n        repository: sourceData.repository,\n        url: apiItem.html_url || apiItem.url,\n        title: `Issue #${apiItem.number}: ${apiItem.title}`,\n        description: (apiItem.body || '').substring(0, 500),\n        author: apiItem.user?.login || 'Unknown',\n        item_id: `github_polling_issues_${sourceData.source_id}_${apiItem.id}`,\n        metadata: {\n          number: apiItem.number,\n          state: apiItem.state,\n          labels: (apiItem.labels || []).map(l => l.name),\n          comments: apiItem.comments || 0,\n          is_pull_request: !!apiItem.pull_request\n        }\n      };\n      \n      // Generate content hash\n      normalizedItem.content_hash = crypto.createHash('sha256')\n        .update(JSON.stringify({\n          id: apiItem.id,\n          number: apiItem.number,\n          title: apiItem.title,\n          state: apiItem.state,\n          updated_at: apiItem.updated_at\n        }))\n        .digest('hex');\n    }\n    \n    if (normalizedItem) {\n      normalized.push(normalizedItem);\n    }\n  }\n}\n\nreturn normalized;"
+      },
+      "id": "normalize-data",
+      "name": "Normalize Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT item_id FROM notifications_history WHERE item_id = $1 LIMIT 1",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "1",
+                "value": "={{$json.item_id}}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "check-duplicate",
+      "name": "Check Duplicate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.length}}",
+              "operation": "equal",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "is-new",
+      "name": "Is New?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{$env.TELEGRAM_DISPATCHER_WORKFLOW_ID}}",
+        "source": "database"
+      },
+      "id": "send-to-telegram",
+      "name": "Send to Telegram",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1650, 200]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "notifications_history",
+        "columns": "source_id,item_id,item_hash,title,url,metadata",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "1",
+                "value": "={{$json.source_id}}"
+              },
+              {
+                "name": "2",
+                "value": "={{$json.item_id}}"
+              },
+              {
+                "name": "3",
+                "value": "={{$json.content_hash}}"
+              },
+              {
+                "name": "4",
+                "value": "={{$json.title}}"
+              },
+              {
+                "name": "5",
+                "value": "={{$json.url}}"
+              },
+              {
+                "name": "6",
+                "value": "={{JSON.stringify($json.metadata)}}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "log-notification",
+      "name": "Log Notification",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1650, 400]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE feed_sources SET last_check = NOW(), error_count = 0 WHERE id = $1",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "1",
+                "value": "={{$json.source_id}}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "update-source-status",
+      "name": "Update Source Status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1850, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Error handler - log error and pass source_id for update\nconst sourceData = $node['Split by Event Type'].json;\nconst errorMessage = $json.error?.message || 'Unknown error';\nconst statusCode = $json.error?.statusCode;\n\nconsole.error(`GitHub API fetch error for ${sourceData.repository}:`, {\n  message: errorMessage,\n  statusCode: statusCode,\n  event_type: sourceData.event_type\n});\n\nreturn { \n  source_id: sourceData.source_id, \n  error: errorMessage,\n  status_code: statusCode\n};"
+      },
+      "id": "error-handler",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1050, 500]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE feed_sources SET error_count = error_count + 1, last_check = NOW() WHERE id = $1",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "1",
+                "value": "={{$json.source_id}}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "update-error-count",
+      "name": "Update Error Count",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1250, 500]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get GitHub API Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get GitHub API Sources": {
+      "main": [
+        [
+          {
+            "node": "Split by Event Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split by Event Type": {
+      "main": [
+        [
+          {
+            "node": "Fetch GitHub API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch GitHub API": {
+      "main": [
+        [
+          {
+            "node": "Normalize Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Data": {
+      "main": [
+        [
+          {
+            "node": "Check Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Is New?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is New?": {
+      "main": [
+        [
+          {
+            "node": "Send to Telegram",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to Telegram": {
+      "main": [
+        [
+          {
+            "node": "Update Source Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Notification": {
+      "main": [
+        [
+          {
+            "node": "Update Source Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Update Error Count",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}
