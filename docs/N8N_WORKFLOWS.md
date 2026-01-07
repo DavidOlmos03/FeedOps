@@ -143,6 +143,7 @@ Before activating workflows, you must configure credentials in the n8n UI.
 ### GitHub Monitor Workflow
 
 **Purpose**: Receive real-time events from GitHub via webhooks
+Note: Also you can build or use a workflow for a **github page**
 
 **Flow Diagram:**
 ```

@@ -178,6 +178,7 @@
       "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]]
     }
   },
+  "active": true,
   "settings": {
     "executionOrder": "v1"
   },
