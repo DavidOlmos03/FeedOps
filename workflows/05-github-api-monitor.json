@@ -123,17 +123,39 @@
       "id": "check-duplicate",
       "name": "Check Duplicate",
       "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1250, 300],
+      "alwaysOutputData": true,
+      "continueOnFail": false
+    },
+    {
+      "parameters": {
+        "functionCode": "// Pass through normalized data with item_id for checking\nconst normalized = $json;\nreturn {\n  ...normalized,\n  _check_item_id: normalized.item_id\n};"
+      },
+      "id": "prepare-for-duplicate-check",
+      "name": "Prepare for Duplicate Check",
+      "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [1250, 300]
+      "position": [1150, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Combine Check Duplicate result with normalized data\nconst checkResult = $json;\nconst normalizedData = $node['Prepare for Duplicate Check'].json;\n\n// Check if duplicate exists\nconst isDuplicate = Array.isArray(checkResult) && checkResult.length > 0;\n\n// Return normalized data with duplicate flag\nreturn {\n  ...normalizedData,\n  _is_duplicate: isDuplicate,\n  _duplicate_count: Array.isArray(checkResult) ? checkResult.length : 0\n};"
+      },
+      "id": "combine-check-result",
+      "name": "Combine Check Result",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1350, 300]
     },
     {
       "parameters": {
         "conditions": {
-          "number": [
+          "boolean": [
             {
-              "value1": "={{$json.length}}",
-              "operation": "equal",
-              "value2": 0
+              "value1": "={{$json._is_duplicate}}",
+              "operation": "notEqual",
+              "value2": true
             }
           ]
         }
@@ -142,17 +164,18 @@
       "name": "Is New?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 1,
-      "position": [1450, 300]
+      "position": [1550, 300]
     },
     {
       "parameters": {
-        "workflowId": "={{$env.TELEGRAM_DISPATCHER_WORKFLOW_ID}}",
+        "mode": "list",
+        "workflowId": "",
         "source": "database"
       },
       "id": "send-to-telegram",
       "name": "Send to Telegram",
       "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1,
+      "typeVersion": 1.1,
       "position": [1650, 200]
     },
     {
@@ -306,6 +329,17 @@
       "main": [
         [
           {
+            "node": "Prepare for Duplicate Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare for Duplicate Check": {
+      "main": [
+        [
+          {
             "node": "Check Duplicate",
             "type": "main",
             "index": 0
@@ -314,6 +348,17 @@
       ]
     },
     "Check Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Combine Check Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Check Result": {
       "main": [
         [
           {
