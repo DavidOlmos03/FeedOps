@@ -47,6 +47,16 @@
     },
     {
       "parameters": {
+        "functionCode": "// Build request parameters based on event type\nconst data = $json;\nconst queryParams = {\n  per_page: 100  // Increased to catch more commits\n};\n\n// Add parameters specific to each endpoint\nif (data.event_type === 'push') {\n  // For commits endpoint - don't use 'since' as it filters by author date\n  // We'll filter by commit date manually after fetching\n  // No additional params needed - defaults to newest first\n} else if (data.event_type === 'issues') {\n  // For issues endpoint\n  queryParams.since = data.last_check;\n  queryParams.state = 'all';\n  queryParams.sort = 'updated';\n  queryParams.direction = 'desc';\n}\n\nreturn {\n  ...data,\n  query_params: queryParams\n};"
+      },
+      "id": "prepare-api-params",
+      "name": "Prepare API Parameters",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
         "method": "GET",
         "url": "=https://api.github.com{{$json.api_path}}",
         "authentication": "genericCredentialType",
@@ -65,29 +75,15 @@
           ]
         },
         "sendQuery": true,
-        "queryParameters": {
-          "parameters": [
-            {
-              "name": "since",
-              "value": "={{$json.last_check}}"
-            },
-            {
-              "name": "per_page",
-              "value": "30"
-            },
-            {
-              "name": "state",
-              "value": "={{$json.event_type === 'issues' ? 'all' : ''}}"
-            }
-          ]
-        },
+        "specifyQueryString": true,
+        "queryString": "={{Object.entries($json.query_params).map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&')}}",
         "options": {}
       },
       "id": "fetch-github-api",
       "name": "Fetch GitHub API",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
-      "position": [850, 300],
+      "position": [950, 300],
       "credentials": {
         "httpHeaderAuth": {
           "id": "4",
@@ -97,13 +93,23 @@
     },
     {
       "parameters": {
-        "functionCode": "// Normalize GitHub API response to standard schema\nconst items = $input.all();\nconst crypto = require('crypto');\n\nconst normalized = [];\n\nfor (const item of items) {\n  const eventData = item.json;\n  const sourceData = $node['Split by Event Type'].json;\n  const eventType = sourceData.event_type;\n  const config = sourceData.config || {};\n  \n  // Handle array response from GitHub API\n  const apiItems = Array.isArray(eventData) ? eventData : [eventData];\n  \n  for (const apiItem of apiItems) {\n    let normalizedItem;\n    \n    if (eventType === 'push') {\n      // Normalize commit\n      const commitMessage = apiItem.commit?.message || '';\n      const firstLine = commitMessage.split('\\n')[0];\n      \n      // Apply keyword filter if configured\n      if (config.keywords) {\n        const keywords = config.keywords.toLowerCase().split(',');\n        const searchText = (firstLine + ' ' + commitMessage).toLowerCase();\n        const hasKeyword = keywords.some(kw => searchText.includes(kw.trim()));\n        if (!hasKeyword) continue;\n      }\n      \n      normalizedItem = {\n        source: 'github',\n        source_id: sourceData.source_id,\n        event_type: 'push',\n        timestamp: apiItem.commit?.author?.date || new Date().toISOString(),\n        repository: sourceData.repository,\n        url: apiItem.html_url || apiItem.url,\n        title: `New commit to ${sourceData.repository}`,\n        description: firstLine.substring(0, 500),\n        author: apiItem.commit?.author?.name || apiItem.author?.login || 'Unknown',\n        item_id: `github_polling_push_${sourceData.source_id}_${apiItem.sha}`,\n        metadata: {\n          sha: apiItem.sha,\n          full_message: commitMessage,\n          committer: apiItem.commit?.committer?.name || 'Unknown'\n        }\n      };\n      \n      // Generate content hash\n      normalizedItem.content_hash = crypto.createHash('sha256')\n        .update(JSON.stringify({\n          sha: apiItem.sha,\n          message: commitMessage,\n          date: apiItem.commit?.author?.date\n        }))\n        .digest('hex');\n        \n    } else if (eventType === 'issues') {\n      // Skip pull requests unless explicitly enabled\n      if (apiItem.pull_request && !config.include_pull_requests) {\n        continue;\n      }\n      \n      // Apply label filter if configured\n      if (config.required_labels) {\n        const requiredLabels = config.required_labels.split(',').map(l => l.trim().toLowerCase());\n        const itemLabels = (apiItem.labels || []).map(l => l.name.toLowerCase());\n        const hasRequiredLabel = requiredLabels.some(req => itemLabels.includes(req));\n        if (!hasRequiredLabel) continue;\n      }\n      \n      // Apply keyword filter if configured\n      if (config.keywords) {\n        const keywords = config.keywords.toLowerCase().split(',');\n        const searchText = ((apiItem.title || '') + ' ' + (apiItem.body || '')).toLowerCase();\n        const hasKeyword = keywords.some(kw => searchText.includes(kw.trim()));\n        if (!hasKeyword) continue;\n      }\n      \n      normalizedItem = {\n        source: 'github',\n        source_id: sourceData.source_id,\n        event_type: 'issues',\n        timestamp: apiItem.updated_at || apiItem.created_at || new Date().toISOString(),\n        repository: sourceData.repository,\n        url: apiItem.html_url || apiItem.url,\n        title: `Issue #${apiItem.number}: ${apiItem.title}`,\n        description: (apiItem.body || '').substring(0, 500),\n        author: apiItem.user?.login || 'Unknown',\n        item_id: `github_polling_issues_${sourceData.source_id}_${apiItem.id}`,\n        metadata: {\n          number: apiItem.number,\n          state: apiItem.state,\n          labels: (apiItem.labels || []).map(l => l.name),\n          comments: apiItem.comments || 0,\n          is_pull_request: !!apiItem.pull_request\n        }\n      };\n      \n      // Generate content hash\n      normalizedItem.content_hash = crypto.createHash('sha256')\n        .update(JSON.stringify({\n          id: apiItem.id,\n          number: apiItem.number,\n          title: apiItem.title,\n          state: apiItem.state,\n          updated_at: apiItem.updated_at\n        }))\n        .digest('hex');\n    }\n    \n    if (normalizedItem) {\n      normalized.push(normalizedItem);\n    }\n  }\n}\n\nreturn normalized;"
+        "functionCode": "// Combine ALL API responses with context from Prepare API Parameters\n// Collect all items from the HTTP Request and attach context to each\n\nconst allApiItems = $input.all();\nconst prepareData = $('Prepare API Parameters').item.json;\n\n// Return all API response items as an array with context attached\nreturn {\n  api_response: allApiItems.map(item => item.json),\n  source_id: prepareData.source_id,\n  repository: prepareData.repository,\n  event_type: prepareData.event_type,\n  last_check: prepareData.last_check,\n  config: prepareData.config\n};"
+      },
+      "id": "merge-context",
+      "name": "Merge Context",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Normalize GitHub API response to standard schema\nconst crypto = require('crypto');\n\n// Get the combined data (API response + context)\nconst data = $input.item.json;\n\n// Validate data structure\nif (!data.api_response) {\n  throw new Error(`Missing api_response. Data keys: ${Object.keys(data).join(', ')}`);\n}\n\nconst apiResponse = data.api_response;\nconst sourceData = {\n  source_id: data.source_id,\n  repository: data.repository,\n  event_type: data.event_type,\n  last_check: data.last_check,\n  config: data.config || {}\n};\n\n// Validate API response is an array\nif (!Array.isArray(apiResponse)) {\n  throw new Error(`API response is not an array. Type: ${typeof apiResponse}, Value: ${JSON.stringify(apiResponse).substring(0, 200)}`);\n}\n\nif (apiResponse.length === 0) {\n  // No new commits/issues - return empty array\n  return [];\n}\n\nconst eventType = sourceData.event_type;\nconst config = sourceData.config;\nconst normalized = [];\n\nfor (const apiItem of apiResponse) {\n  if (!apiItem || typeof apiItem !== 'object') continue;\n  \n  let normalizedItem;\n  \n  if (eventType === 'push') {\n    // Validate commit data\n    if (!apiItem.sha || !apiItem.commit) continue;\n    \n    const commitMessage = apiItem.commit?.message || '';\n    const firstLine = commitMessage.split('\\n')[0].trim();\n    const formattedDescription = firstLine ? `📄 ${firstLine}` : '';\n    \n    normalizedItem = {\n      source: 'github',\n      source_id: sourceData.source_id,\n      event_type: 'push',\n      timestamp: apiItem.commit?.committer?.date || apiItem.commit?.author?.date || new Date().toISOString(),\n      repository: sourceData.repository,\n      url: apiItem.html_url || apiItem.url,\n      title: `New commit to ${sourceData.repository}`,\n      description: formattedDescription,\n      author: apiItem.commit?.author?.name || apiItem.author?.login || 'Unknown',\n      item_id: `github_polling_push_${sourceData.source_id}_${apiItem.sha}`,\n      metadata: {\n        sha: apiItem.sha,\n        full_message: commitMessage,\n        committer: apiItem.commit?.committer?.name || 'Unknown'\n      }\n    };\n    \n    normalizedItem.content_hash = crypto.createHash('sha256')\n      .update(JSON.stringify({\n        sha: apiItem.sha,\n        message: commitMessage,\n        date: apiItem.commit?.committer?.date || apiItem.commit?.author?.date\n      }))\n      .digest('hex');\n      \n  } else if (eventType === 'issues') {\n    // Validate issue data\n    if (!apiItem.number) continue;\n    if (apiItem.pull_request && !config.include_pull_requests) continue;\n    \n    normalizedItem = {\n      source: 'github',\n      source_id: sourceData.source_id,\n      event_type: 'issues',\n      timestamp: apiItem.updated_at || apiItem.created_at || new Date().toISOString(),\n      repository: sourceData.repository,\n      url: apiItem.html_url || apiItem.url,\n      title: `Issue #${apiItem.number}: ${apiItem.title || 'No title'}`,\n      description: (apiItem.body || '').substring(0, 500),\n      author: apiItem.user?.login || 'Unknown',\n      item_id: `github_polling_issues_${sourceData.source_id}_${apiItem.id}`,\n      metadata: {\n        number: apiItem.number,\n        state: apiItem.state,\n        labels: (apiItem.labels || []).map(l => l.name),\n        comments: apiItem.comments || 0,\n        is_pull_request: !!apiItem.pull_request\n      }\n    };\n    \n    normalizedItem.content_hash = crypto.createHash('sha256')\n      .update(JSON.stringify({\n        id: apiItem.id,\n        number: apiItem.number,\n        title: apiItem.title,\n        state: apiItem.state,\n        updated_at: apiItem.updated_at\n      }))\n      .digest('hex');\n  }\n  \n  if (normalizedItem) {\n    normalized.push(normalizedItem);\n  }\n}\n\nreturn normalized;"
       },
       "id": "normalize-data",
       "name": "Normalize Data",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [1050, 300]
+      "position": [1150, 300]
     },
     {
       "parameters": {
@@ -168,6 +174,16 @@
     },
     {
       "parameters": {
+        "functionCode": "// Pass normalized event data to Telegram Dispatcher\nconst data = $json;\n\n// Remove internal flags added during processing\nconst { _is_duplicate, _duplicate_count, _check_item_id, ...cleanData } = data;\n\nreturn cleanData;"
+      },
+      "id": "prepare-telegram-data",
+      "name": "Prepare Telegram Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1650, 200]
+    },
+    {
+      "parameters": {
         "mode": "list",
         "workflowId": "",
         "source": "database"
@@ -176,7 +192,7 @@
       "name": "Send to Telegram",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [1650, 200]
+      "position": [1850, 200]
     },
     {
       "parameters": {
@@ -243,7 +259,7 @@
     },
     {
       "parameters": {
-        "functionCode": "// Error handler - log error and pass source_id for update\nconst sourceData = $node['Split by Event Type'].json;\nconst errorMessage = $json.error?.message || 'Unknown error';\nconst statusCode = $json.error?.statusCode;\n\nconsole.error(`GitHub API fetch error for ${sourceData.repository}:`, {\n  message: errorMessage,\n  statusCode: statusCode,\n  event_type: sourceData.event_type\n});\n\nreturn { \n  source_id: sourceData.source_id, \n  error: errorMessage,\n  status_code: statusCode\n};"
+        "functionCode": "// Error handler - log error and pass source_id for update\nconst sourceData = $node['Prepare API Parameters'].json;\nconst errorMessage = $json.error?.message || 'Unknown error';\nconst statusCode = $json.error?.statusCode;\n\nconsole.error(`GitHub API fetch error for ${sourceData.repository}:`, {\n  message: errorMessage,\n  statusCode: statusCode,\n  event_type: sourceData.event_type\n});\n\nreturn { \n  source_id: sourceData.source_id, \n  error: errorMessage,\n  status_code: statusCode\n};"
       },
       "id": "error-handler",
       "name": "Error Handler",
@@ -300,6 +316,17 @@
       "main": [
         [
           {
+            "node": "Prepare API Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare API Parameters": {
+      "main": [
+        [
+          {
             "node": "Fetch GitHub API",
             "type": "main",
             "index": 0
@@ -311,7 +338,7 @@
       "main": [
         [
           {
-            "node": "Normalize Data",
+            "node": "Merge Context",
             "type": "main",
             "index": 0
           }
@@ -319,6 +346,17 @@
         [
           {
             "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Context": {
+      "main": [
+        [
+          {
+            "node": "Normalize Data",
             "type": "main",
             "index": 0
           }
@@ -373,12 +411,23 @@
       "main": [
         [
           {
-            "node": "Send to Telegram",
+            "node": "Prepare Telegram Data",
             "type": "main",
             "index": 0
           },
           {
             "node": "Log Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Telegram Data": {
+      "main": [
+        [
+          {
+            "node": "Send to Telegram",
             "type": "main",
             "index": 0
           }
