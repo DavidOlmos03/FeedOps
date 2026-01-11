@@ -315,10 +315,29 @@ docker exec feedops-n8n printenv | grep GITHUB_PERSONAL_ACCESS_TOKEN
 4. Click **"Save"**
 
 **Important**: After importing, manually configure PostgreSQL query parameters (they don't import from JSON):
-- **Check Duplicate** node: Add parameter `1` = `={{$json.item_id}}`
-- **Log Notification** node: Should import correctly
-- **Update Source Status** node: Add parameter `1` = `={{$json.source_id}}`
-- **Update Error Count** node: Add parameter `1` = `={{$json.source_id}}`
+
+1. **Check Duplicate** node: Add parameter `1` = `={{$json.item_id}}`
+
+2. **Log Notification** node: Add 6 parameters for the INSERT query:
+   - Open the **"Log Notification"** node
+   - Verify the query is:
+     ```sql
+     INSERT INTO notifications_history (source_id, item_id, item_hash, title, url, metadata)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ```
+   - Scroll down and click **"Add Option"** → **"Query Parameters"**
+   - Click **"Add Parameter"** six times and configure each:
+     - **Parameter 1**: `1` → Value: `={{$json.source_id}}`
+     - **Parameter 2**: `2` → Value: `={{$json.item_id}}`
+     - **Parameter 3**: `3` → Value: `={{$json.content_hash}}`
+     - **Parameter 4**: `4` → Value: `={{$json.title}}`
+     - **Parameter 5**: `5` → Value: `={{$json.url}}`
+     - **Parameter 6**: `6` → Value: `={{JSON.stringify($json.metadata)}}`
+   - Click **"Save"**
+
+3. **Update Source Status** node: Add parameter `1` = `={{$json.source_id}}`
+
+4. **Update Error Count** node: Add parameter `1` = `={{$json.source_id}}`
 
 #### Step 5: Add Repositories to Monitor
 
