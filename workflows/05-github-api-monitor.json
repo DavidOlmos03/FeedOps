@@ -37,7 +37,7 @@
     },
     {
       "parameters": {
-        "functionCode": "// Split each source into multiple items - one per event type\nconst source = $input.item.json;\nconst config = source.config || {};\nconst eventTypes = config.event_types || ['push', 'issues'];\n\nconst lastCheck = source.last_check \n  ? new Date(source.last_check).toISOString()\n  : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(); // Default: last 24 hours\n\n// Create one item per event type\nconst items = eventTypes.map(eventType => {\n  let endpoint, apiPath;\n  \n  if (eventType === 'push') {\n    endpoint = 'commits';\n    apiPath = `/repos/${source.source_identifier}/commits`;\n  } else if (eventType === 'issues') {\n    endpoint = 'issues';\n    apiPath = `/repos/${source.source_identifier}/issues`;\n  }\n  \n  return {\n    source_id: source.id,\n    repository: source.source_identifier,\n    event_type: eventType,\n    endpoint: endpoint,\n    api_path: apiPath,\n    last_check: lastCheck,\n    config: config\n  };\n});\n\nreturn items;"
+        "functionCode": "// Split each source into multiple items - one per event type\nconst source = $input.item.json;\nconst config = source.config || {};\nconst eventTypes = config.event_types || ['push', 'issues'];\n\nconst lastCheck = source.last_check \n  ? new Date(source.last_check).toISOString()\n  : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();\n\n// Create one item per event type\nconst items = eventTypes.map(eventType => {\n  let endpoint, apiPath;\n  \n  if (eventType === 'push') {\n    // Use events endpoint to get push events from ALL branches\n    endpoint = 'events';\n    apiPath = `/repos/${source.source_identifier}/events`;\n  } else if (eventType === 'issues') {\n    endpoint = 'issues';\n    apiPath = `/repos/${source.source_identifier}/issues`;\n  }\n  \n  return {\n    source_id: source.id,\n    repository: source.source_identifier,\n    event_type: eventType,\n    endpoint: endpoint,\n    api_path: apiPath,\n    last_check: lastCheck,\n    config: config\n  };\n});\n\nreturn items;"
       },
       "id": "split-by-event-type",
       "name": "Split by Event Type",
@@ -103,13 +103,92 @@
     },
     {
       "parameters": {
-        "functionCode": "// Normalize GitHub API response to standard schema\nconst crypto = require('crypto');\n\n// Get the combined data (API response + context)\nconst data = $input.item.json;\n\n// Validate data structure\nif (!data.api_response) {\n  throw new Error(`Missing api_response. Data keys: ${Object.keys(data).join(', ')}`);\n}\n\nconst apiResponse = data.api_response;\nconst sourceData = {\n  source_id: data.source_id,\n  repository: data.repository,\n  event_type: data.event_type,\n  last_check: data.last_check,\n  config: data.config || {}\n};\n\n// Validate API response is an array\nif (!Array.isArray(apiResponse)) {\n  throw new Error(`API response is not an array. Type: ${typeof apiResponse}, Value: ${JSON.stringify(apiResponse).substring(0, 200)}`);\n}\n\nif (apiResponse.length === 0) {\n  // No new commits/issues - return empty array\n  return [];\n}\n\nconst eventType = sourceData.event_type;\nconst config = sourceData.config;\nconst normalized = [];\n\nfor (const apiItem of apiResponse) {\n  if (!apiItem || typeof apiItem !== 'object') continue;\n  \n  let normalizedItem;\n  \n  if (eventType === 'push') {\n    // Validate commit data\n    if (!apiItem.sha || !apiItem.commit) continue;\n    \n    const commitMessage = apiItem.commit?.message || '';\n    const firstLine = commitMessage.split('\\n')[0].trim();\n    const formattedDescription = firstLine ? `📄 ${firstLine}` : '';\n    \n    normalizedItem = {\n      source: 'github',\n      source_id: sourceData.source_id,\n      event_type: 'push',\n      timestamp: apiItem.commit?.committer?.date || apiItem.commit?.author?.date || new Date().toISOString(),\n      repository: sourceData.repository,\n      url: apiItem.html_url || apiItem.url,\n      title: `New commit to ${sourceData.repository}`,\n      description: formattedDescription,\n      author: apiItem.commit?.author?.name || apiItem.author?.login || 'Unknown',\n      item_id: `github_polling_push_${sourceData.source_id}_${apiItem.sha}`,\n      metadata: {\n        sha: apiItem.sha,\n        full_message: commitMessage,\n        committer: apiItem.commit?.committer?.name || 'Unknown'\n      }\n    };\n    \n    normalizedItem.content_hash = crypto.createHash('sha256')\n      .update(JSON.stringify({\n        sha: apiItem.sha,\n        message: commitMessage,\n        date: apiItem.commit?.committer?.date || apiItem.commit?.author?.date\n      }))\n      .digest('hex');\n      \n  } else if (eventType === 'issues') {\n    // Validate issue data\n    if (!apiItem.number) continue;\n    if (apiItem.pull_request && !config.include_pull_requests) continue;\n    \n    normalizedItem = {\n      source: 'github',\n      source_id: sourceData.source_id,\n      event_type: 'issues',\n      timestamp: apiItem.updated_at || apiItem.created_at || new Date().toISOString(),\n      repository: sourceData.repository,\n      url: apiItem.html_url || apiItem.url,\n      title: `Issue #${apiItem.number}: ${apiItem.title || 'No title'}`,\n      description: (apiItem.body || '').substring(0, 500),\n      author: apiItem.user?.login || 'Unknown',\n      item_id: `github_polling_issues_${sourceData.source_id}_${apiItem.id}`,\n      metadata: {\n        number: apiItem.number,\n        state: apiItem.state,\n        labels: (apiItem.labels || []).map(l => l.name),\n        comments: apiItem.comments || 0,\n        is_pull_request: !!apiItem.pull_request\n      }\n    };\n    \n    normalizedItem.content_hash = crypto.createHash('sha256')\n      .update(JSON.stringify({\n        id: apiItem.id,\n        number: apiItem.number,\n        title: apiItem.title,\n        state: apiItem.state,\n        updated_at: apiItem.updated_at\n      }))\n      .digest('hex');\n  }\n  \n  if (normalizedItem) {\n    normalized.push(normalizedItem);\n  }\n}\n\nreturn normalized;"
+        "functionCode": "// Split events array into individual items\nconst data = $input.item.json;\n\nif (!data.api_response || !Array.isArray(data.api_response)) {\n  return [];\n}\n\n// Map each event with context\nreturn data.api_response.map(event => ({\n  ...event,\n  _context: {\n    source_id: data.source_id,\n    repository: data.repository,\n    event_type: data.event_type,\n    last_check: data.last_check,\n    config: data.config || {}\n  }\n}));"
+      },
+      "id": "split-events",
+      "name": "Split Events",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1150, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.type}}",
+              "operation": "equal",
+              "value2": "PushEvent"
+            }
+          ],
+          "dateTime": [
+            {
+              "value1": "={{$json.created_at}}",
+              "operation": "after",
+              "value2": "={{$json._context.last_check}}"
+            }
+          ]
+        }
+      },
+      "id": "filter-push-events",
+      "name": "Filter Push Events",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{$json._context.repository}}/commits/{{$json.payload.head}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-commit-details",
+      "name": "Get Commit Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1550, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "4",
+          "name": "GitHub API Token"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "functionCode": "// Combine push event with commit details\nconst commitDetails = $json;\nconst pushEvent = $node['Filter Push Events'].json;\n\n// Check if commit details fetch failed\nif (commitDetails.error) {\n  console.error('Failed to fetch commit details:', commitDetails.error);\n  // Create a basic commit object with available info\n  const payload = pushEvent.payload || {};\n  return {\n    event: pushEvent,\n    commit: {\n      sha: payload.head,\n      html_url: `https://github.com/${pushEvent._context.repository}/commit/${payload.head}`,\n      commit: {\n        message: `Commit ${payload.head?.substring(0, 7) || 'unknown'}`,\n        author: {\n          name: pushEvent.actor?.login || 'Unknown'\n        }\n      }\n    },\n    _context: pushEvent._context\n  };\n}\n\nreturn {\n  event: pushEvent,\n  commit: commitDetails,\n  _context: pushEvent._context\n};"
+      },
+      "id": "combine-commit-data",
+      "name": "Combine Commit Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1750, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Normalize enriched GitHub event to standard schema\nconst crypto = require('crypto');\nconst data = $input.item.json;\n\nconst event = data.event;\nconst commit = data.commit;\nconst context = data._context;\n\nconst config = context.config || {};\nconst payload = event.payload || {};\n\n// Extract branch from ref (e.g., \"refs/heads/main\" -> \"main\")\nconst ref = payload.ref || '';\nconst branch = ref.replace('refs/heads/', '');\n\n// Get commit message\nconst commitMessage = commit.commit?.message || '';\nconst firstLine = commitMessage.split('\\n')[0].trim();\nconst formattedDescription = firstLine ? `📄 ${firstLine}` : '';\n\n// Apply keyword filter if configured\nif (config.keywords) {\n  const keywords = config.keywords.toLowerCase().split(',');\n  const searchText = (firstLine + ' ' + commitMessage).toLowerCase();\n  const hasKeyword = keywords.some(kw => searchText.includes(kw.trim()));\n  if (!hasKeyword) {\n    return null; // Skip this commit\n  }\n}\n\nconst normalizedItem = {\n  source: 'github',\n  source_id: context.source_id,\n  event_type: 'push',\n  timestamp: event.created_at || new Date().toISOString(),\n  repository: context.repository,\n  url: commit.html_url || `https://github.com/${context.repository}/commit/${commit.sha}`,\n  title: `New commit to ${context.repository}`,\n  description: formattedDescription,\n  author: commit.commit?.author?.name || event.actor?.login || 'Unknown',\n  item_id: `github_polling_push_${context.source_id}_${commit.sha}`,\n  metadata: {\n    sha: commit.sha,\n    branch: branch,\n    full_message: commitMessage,\n    committer: commit.commit?.author?.name || 'Unknown',\n    event_id: event.id\n  }\n};\n\nnormalizedItem.content_hash = crypto.createHash('sha256')\n  .update(JSON.stringify({\n    sha: commit.sha,\n    message: commitMessage,\n    branch: branch,\n    timestamp: event.created_at\n  }))\n  .digest('hex');\n\nreturn normalizedItem;"
       },
       "id": "normalize-data",
       "name": "Normalize Data",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [1150, 300]
+      "position": [1950, 200]
     },
     {
       "parameters": {
@@ -130,7 +209,7 @@
       "name": "Check Duplicate",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.4,
-      "position": [1250, 300],
+      "position": [2350, 200],
       "alwaysOutputData": true,
       "continueOnFail": false
     },
@@ -142,7 +221,7 @@
       "name": "Prepare for Duplicate Check",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [1150, 300]
+      "position": [2150, 200]
     },
     {
       "parameters": {
@@ -152,7 +231,7 @@
       "name": "Combine Check Result",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [1350, 300]
+      "position": [2550, 200]
     },
     {
       "parameters": {
@@ -170,7 +249,7 @@
       "name": "Is New?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 1,
-      "position": [1550, 300]
+      "position": [2750, 200]
     },
     {
       "parameters": {
@@ -180,7 +259,7 @@
       "name": "Prepare Telegram Data",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [1650, 200]
+      "position": [2950, 100]
     },
     {
       "parameters": {
@@ -192,7 +271,7 @@
       "name": "Send to Telegram",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [1850, 200]
+      "position": [3150, 100]
     },
     {
       "parameters": {
@@ -234,7 +313,7 @@
       "name": "Log Notification",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 1,
-      "position": [1650, 400]
+      "position": [2950, 300]
     },
     {
       "parameters": {
@@ -255,7 +334,7 @@
       "name": "Update Source Status",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 1,
-      "position": [1850, 300]
+      "position": [3350, 200]
     },
     {
       "parameters": {
@@ -353,6 +432,50 @@
       ]
     },
     "Merge Context": {
+      "main": [
+        [
+          {
+            "node": "Split Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Events": {
+      "main": [
+        [
+          {
+            "node": "Filter Push Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Push Events": {
+      "main": [
+        [
+          {
+            "node": "Get Commit Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Commit Details": {
+      "main": [
+        [
+          {
+            "node": "Combine Commit Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Commit Data": {
       "main": [
         [
           {
