@@ -275,9 +275,8 @@
     },
     {
       "parameters": {
-        "operation": "insert",
-        "table": "notifications_history",
-        "columns": "source_id,item_id,item_hash,title,url,metadata",
+        "operation": "executeQuery",
+        "query": "INSERT INTO notifications_history (source_id, item_id, item_hash, title, url, metadata) VALUES ($1, $2, $3, $4, $5, $6)",
         "options": {
           "queryParameters": {
             "parameters": [
@@ -312,7 +311,7 @@
       "id": "log-notification",
       "name": "Log Notification",
       "type": "n8n-nodes-base.postgres",
-      "typeVersion": 1,
+      "typeVersion": 2.4,
       "position": [2950, 300]
     },
     {
