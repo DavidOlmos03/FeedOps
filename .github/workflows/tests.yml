@@ -1,0 +1,126 @@
+name: FeedOps Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up test environment
+        run: |
+          chmod +x tests/setup.sh
+          bash tests/setup.sh
+
+      - name: Run unit tests
+        run: |
+          chmod +x tests/run-tests.sh
+          bash tests/run-tests.sh unit
+
+  validation-tests:
+    name: Validation Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Set up test environment
+        run: |
+          chmod +x tests/setup.sh
+          bash tests/setup.sh
+
+      - name: Run validation tests
+        run: |
+          chmod +x tests/run-tests.sh
+          bash tests/run-tests.sh validation
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Create test .env file
+        run: |
+          cp tests/fixtures/mock_env_example .env.test
+          cat .env.test
+
+      - name: Start services
+        run: |
+          docker-compose up -d
+          sleep 30
+
+      - name: Check service health
+        run: |
+          docker-compose ps
+          docker-compose logs
+
+      - name: Set up test environment
+        run: |
+          chmod +x tests/setup.sh
+          bash tests/setup.sh
+
+      - name: Run integration tests
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_db
+        run: |
+          chmod +x tests/run-tests.sh
+          bash tests/run-tests.sh integration
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker-compose down -v
+
+  all-tests:
+    name: All Tests
+    needs: [unit-tests, validation-tests, integration-tests]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: All tests passed
+        run: echo "✅ All test suites passed successfully!"

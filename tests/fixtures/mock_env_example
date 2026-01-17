@@ -1,0 +1,52 @@
+# Mock environment file for testing
+
+# PostgreSQL Configuration
+POSTGRES_USER=test_user
+POSTGRES_PASSWORD=test_password_123
+POSTGRES_DB=test_feedops
+POSTGRES_PORT=5432
+
+# Redis Configuration
+REDIS_PASSWORD=test_redis_pass_456
+
+# n8n Configuration
+N8N_PORT=5679
+N8N_PROTOCOL=http
+N8N_HOST=localhost
+N8N_BASIC_AUTH_ACTIVE=true
+N8N_BASIC_AUTH_USER=test_admin
+N8N_BASIC_AUTH_PASSWORD=test_admin_pass
+N8N_ENCRYPTION_KEY=test_encryption_key_1234567890abcdef
+
+# Database Connection for n8n
+DB_TYPE=postgresdb
+DB_POSTGRESDB_HOST=postgres
+DB_POSTGRESDB_PORT=5432
+DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+DB_POSTGRESDB_USER=${POSTGRES_USER}
+DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+
+# GitHub Configuration
+GITHUB_TOKEN=ghp_test_token_1234567890
+GITHUB_WEBHOOK_SECRET=test_webhook_secret_123
+
+# Reddit Configuration
+REDDIT_CLIENT_ID=test_reddit_client_id
+REDDIT_CLIENT_SECRET=test_reddit_client_secret
+REDDIT_USERNAME=test_reddit_user
+REDDIT_PASSWORD=test_reddit_pass
+
+# Telegram Configuration
+TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+TELEGRAM_CHAT_ID=-1001234567890
+
+# RSS Configuration
+RSS_FEED_URLS=https://example.com/feed1.xml,https://example.com/feed2.xml
+
+# Notification Settings
+NOTIFICATION_RETENTION_DAYS=30
+MAX_RETRIES=3
+RETRY_BACKOFF_MULTIPLIER=2
+
+# Timezone
+TZ=UTC

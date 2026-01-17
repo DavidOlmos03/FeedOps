@@ -41,3 +41,13 @@ temp/
 # N8N exports (keep templates, ignore user exports)
 exports/*.json
 !workflows/*.json
+
+# Test libraries (downloaded during setup)
+tests/lib/bats-core/
+tests/lib/bats-support/
+tests/lib/bats-assert/
+tests/lib/bats-file/
+
+# Test reports and generated files
+tests/reports/
+tests/.env.test
